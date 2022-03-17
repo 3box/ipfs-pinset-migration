@@ -1,13 +1,13 @@
 package main
 
 import (
-    "fmt"
+	"fmt"
 
-    migrate "github.com/3box/ipfs-pinset-migration"
+	migrate "github.com/3box/ipfs-pinset-migration/migrate"
 )
 
 func main() {
-    message := migrate.Hello("Ceramic")
-    fmt.Println(message)
+	message := migrate.Hello("Ceramic")
+	fmt.Println(message)
+	migrate.SetUp()
 }
-
