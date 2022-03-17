@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -12,13 +13,13 @@ import (
 	dshelp "github.com/ipfs/go-ipfs-ds-help"
 )
 
-func Migrate(bucket, path string) {
+func Migrate(bucket, prefix string) {
 	cfg := configureAWS()
 	s3Client := s3.NewFromConfig(cfg)
 
 	output, err := s3Client.ListObjectsV2(context.TODO(), &s3.ListObjectsV2Input{
 		Bucket: aws.String(bucket),
-		Prefix: aws.String(path),
+		Prefix: aws.String(prefix),
 	})
 
 	if err != nil {
@@ -28,7 +29,9 @@ func Migrate(bucket, path string) {
 	log.Println("First page of files:")
 	for _, object := range output.Contents {
 		if object.Size != 0 {
-			log.Printf("key=%s size=%d", aws.ToString(object.Key), object.Size)
+			log.Printf("key=%s", aws.ToString(object.Key))
+			_, file := path.Split(aws.ToString(object.Key))
+			log.Printf("b58=%s", blockToMultihash(file))
 		}
 	}
 }
@@ -46,5 +49,5 @@ func blockToMultihash(key string) string {
 	if err != nil {
 		fmt.Printf("Failed to convert key %v\n", key)
 	}
-	return mh.String()
+	return mh.B58String()
 }
