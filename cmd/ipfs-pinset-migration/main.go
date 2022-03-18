@@ -11,6 +11,7 @@ import (
 var (
 	bucket     string
 	pinsPrefix string
+	ipfsApiUrl string
 )
 
 func main() {
@@ -21,10 +22,11 @@ func main() {
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
-	migrate.Migrate(bucket, pinsPrefix)
+	migrate.Migrate(bucket, pinsPrefix, ipfsApiUrl)
 }
 
 func init() {
-	flag.StringVarP(&bucket, "bucket", "b", "<s3_bucket_name>", "S3 bucket name")
-	flag.StringVarP(&pinsPrefix, "prefix", "p", "<s3_bucket_prefix>", "S3 bucket prefix for pins")
+	flag.StringVarP(&bucket, "bucket", "b", "", "S3 bucket name")
+	flag.StringVarP(&pinsPrefix, "prefix", "p", "", "S3 bucket prefix for pins")
+	flag.StringVarP(&ipfsApiUrl, "ipfs", "i", "localhost:5001", "IPFS API url")
 }
