@@ -4,9 +4,8 @@ go 1.17
 
 replace github.com/3box/ipfs-pinset-migration/migrate => ../../migrate
 
-require github.com/3box/ipfs-pinset-migration/migrate v0.0.0-00010101000000-000000000000
-
 require (
+	github.com/3box/ipfs-pinset-migration/migrate v0.0.0-00010101000000-000000000000
 	github.com/aws/aws-sdk-go-v2 v1.15.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.4.0 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.15.0 // indirect
@@ -48,12 +47,12 @@ require (
 	github.com/multiformats/go-multibase v0.0.3 // indirect
 	github.com/multiformats/go-multihash v0.1.0 // indirect
 	github.com/multiformats/go-varint v0.0.6 // indirect
-	github.com/ogier/pflag v0.0.1 // indirect
+	github.com/ogier/pflag v0.0.1
 	github.com/spacemonkeygo/spacelog v0.0.0-20180420211403-2296661a0572 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/whyrusleeping/tar-utils v0.0.0-20180509141711-8c6c8ba81d5c // indirect
 	go.opencensus.io v0.22.4 // indirect
 	golang.org/x/crypto v0.0.0-20210220033148-5ea612d1eb83 // indirect
-	golang.org/x/sys v0.0.0-20210309074719-68d13333faf2 // indirect
+	golang.org/x/sys v0.0.0-20211216021012-1d35b9e2eb4e // indirect
 	lukechampine.com/blake3 v1.1.6 // indirect
 )
