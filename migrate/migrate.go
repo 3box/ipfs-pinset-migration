@@ -27,6 +27,9 @@ const (
 	RequestTimeout    = 3 * time.Second
 	RetryDelay        = 250 * time.Millisecond
 	NumRequestRetries = 3
+
+	PinnedFilename   = "pinned.txt"
+	UnpinnedFilename = "unpinned.txt"
 )
 
 var (
@@ -35,9 +38,15 @@ var (
 
 	// Default context
 	ctx = context.Background()
+
+	// Stats
+	foundCount     = 0
+	convertedCount = 0
+	pinnedCount    = 0
+	unpinnedCount  = 0
 )
 
-func Migrate(bucket, prefix, ipfsUrl string) {
+func Migrate(bucket, prefix, ipfsUrl, statusPath string) {
 	// Setup S3 access and pagination
 	cfg := configureAWS()
 	s3Client := s3.NewFromConfig(cfg)
@@ -46,15 +55,20 @@ func Migrate(bucket, prefix, ipfsUrl string) {
 		Prefix: aws.String(prefix),
 	})
 
+	// Create the status file path, and ignore if it already exists.
+	if err := os.MkdirAll(statusPath, 0770); err != nil {
+		log.Fatal(err)
+	}
+
 	// Use a single shell to IPFS since it uses a thread-safe HTTP client
 	ipfsShell := shell.NewShell(ipfsUrl)
 
 	// If statuses were already written previously, load them, and pin any unpinned CIDs.
-	_, unpinnedCids := readPinStatuses()
+	_, unpinnedCids := readPinStatuses(statusPath)
 	pinCids(ipfsShell, unpinnedCids)
 
 	// Write final statuses at the end
-	defer writePinStatuses()
+	defer writePinStatuses(statusPath)
 
 	pageNum := 1
 	for paginator.HasMorePages() {
@@ -90,23 +104,23 @@ func blockToCid(key string) (string, error) {
 }
 
 func nextPage(paginator *s3.ListObjectsV2Paginator) (*s3.ListObjectsV2Output, error) {
-	for i := 0; i < NumRequestRetries; i++ {
-		page, err := func() (*s3.ListObjectsV2Output, error) {
-			// Use a new child context with timeout for each page retrieval attempt
-			pageCtx, pageCancel := context.WithTimeout(ctx, RequestTimeout)
-			defer pageCancel()
+	nextFn := func() (*s3.ListObjectsV2Output, error) {
+		// Use a new child context with timeout for each page retrieval attempt
+		pageCtx, pageCancel := context.WithTimeout(ctx, RequestTimeout)
+		defer pageCancel()
 
-			page, err := paginator.NextPage(pageCtx)
-			select {
-			case <-pageCtx.Done():
-				log.Printf("page failed: %s", pageCtx.Err())
-				return nil, pageCtx.Err()
-			default:
-				// Fall through and return result
-			}
-			return page, err
-		}()
-		if err == nil {
+		page, err := paginator.NextPage(pageCtx)
+		select {
+		case <-pageCtx.Done():
+			log.Printf("page failed: %s", pageCtx.Err())
+			return nil, pageCtx.Err()
+		default:
+			// Fall through and return result
+		}
+		return page, err
+	}
+	for i := 0; i < NumRequestRetries; i++ {
+		if page, err := nextFn(); err == nil {
 			return page, nil
 		}
 		time.Sleep(time.Duration(math.Pow(2, float64(i))) * RetryDelay) // exponential backoff
@@ -118,11 +132,13 @@ func cidsFromPage(page *s3.ListObjectsV2Output) []string {
 	cids := make([]string, 0, page.KeyCount)
 	for _, object := range page.Contents {
 		if object.Size != 0 { // filter out directories
+			foundCount++
 			// Convert file name to CID
 			key := aws.ToString(object.Key)
 			_, name := path.Split(key)
 			cid, err := blockToCid(name)
 			if err == nil {
+				convertedCount++
 				log.Printf("conv:key=%s,cid=%s", key, cid)
 				cids = append(cids, cid)
 			} else {
@@ -155,24 +171,24 @@ func pinCids(ipfsShell *shell.Shell, cids []string) {
 }
 
 func pinCid(ipfsShell *shell.Shell, cid string) error {
+	pinFn := func() error {
+		// Use a new child context with timeout for each pin request attempt
+		pinCtx, pinCancel := context.WithTimeout(ctx, RequestTimeout)
+		defer pinCancel()
+
+		err := ipfsShell.Request("pin/add", cid).Option("recursive", false).Exec(pinCtx, nil)
+		select {
+		case <-pinCtx.Done():
+			log.Printf("pin failed: %s", pinCtx.Err())
+			return pinCtx.Err()
+		default:
+			// Fall through
+		}
+		return err
+	}
 	for i := 0; i < NumRequestRetries; i++ {
 		// Ref: https://stackoverflow.com/questions/45617758/defer-in-the-loop-what-will-be-better
-		err := func() error {
-			// Use a new child context with timeout for each pin request attempt
-			pinCtx, pinCancel := context.WithTimeout(ctx, RequestTimeout)
-			defer pinCancel()
-
-			err := ipfsShell.Request("pin/add", cid).Option("recursive", false).Exec(pinCtx, nil)
-			select {
-			case <-pinCtx.Done():
-				log.Printf("pin failed: %s", pinCtx.Err())
-				return pinCtx.Err()
-			default:
-				// Fall through
-			}
-			return err
-		}()
-		if err == nil {
+		if err := pinFn(); err == nil {
 			return nil
 		}
 		time.Sleep(time.Duration(math.Pow(2, float64(i))) * RetryDelay) // exponential backoff
@@ -180,16 +196,16 @@ func pinCid(ipfsShell *shell.Shell, cid string) error {
 	return errors.New("maximum retries exceeded")
 }
 
-func readPinStatuses() ([]string, []string) {
-	pinnedCids := readPinStatus("pinned", true)
-	unpinnedCids := readPinStatus("unpinned", false)
+func readPinStatuses(statusPath string) ([]string, []string) {
+	pinnedCids := readPinStatus(statusPath + "/" + PinnedFilename, true)
+	unpinnedCids := readPinStatus(statusPath + "/" + UnpinnedFilename, false)
 	log.Printf("read pinned=%d, unpinned=%d", len(pinnedCids), len(unpinnedCids))
 	return pinnedCids, unpinnedCids
 }
 
-func readPinStatus(filename string, status bool) []string {
+func readPinStatus(path string, status bool) []string {
 	cids := make([]string, 0)
-	f, err := os.Open(filename)
+	f, err := os.OpenFile(path, os.O_RDONLY | os.O_CREATE, 0755)
 	defer func(p *os.File) { _ = p.Close() }(f)
 	if err == nil {
 		scanner := bufio.NewScanner(f)
@@ -202,22 +218,20 @@ func readPinStatus(filename string, status bool) []string {
 	return cids
 }
 
-func writePinStatuses() {
-	pinned, err := os.Create("pinned")
+func writePinStatuses(path string) {
+	pinned, err := os.OpenFile(path + "/" + PinnedFilename, os.O_WRONLY | os.O_TRUNC, 0755)
 	defer func(p *os.File) { _ = p.Close() }(pinned)
 	if err != nil {
 		log.Printf("pinned create error: %s", err)
 		return
 	}
-	unpinned, err := os.Create("unpinned")
+	unpinned, err := os.OpenFile(path + "/" + UnpinnedFilename, os.O_WRONLY | os.O_TRUNC, 0755)
 	defer func(u *os.File) { _ = u.Close() }(unpinned)
 	if err != nil {
 		log.Printf("unpinned create error: %s", err)
 		return
 	}
 
-	pinnedCount := 0
-	unpinnedCount := 0
 	pinMap.Range(func(key, value interface{}) bool {
 		// Ignore errors writing individual CIDs to file
 		if value.(bool) {
@@ -229,5 +243,5 @@ func writePinStatuses() {
 		}
 		return true
 	})
-	log.Printf("wrote pinned=%d, unpinned=%d", pinnedCount, unpinnedCount)
+	log.Printf("%d found, %d converted, %d pinned, %d unpinned", foundCount, convertedCount, pinnedCount, unpinnedCount)
 }
