@@ -39,6 +39,9 @@ var (
 	// Default context
 	ctx = context.Background()
 
+	// Wait group for goroutines
+	wg = sync.WaitGroup{}
+
 	// Stats
 	foundCount     = 0
 	convertedCount = 0
@@ -67,9 +70,6 @@ func Migrate(bucket, prefix, ipfsUrl, logPath string) {
 	_, unpinnedCids := readLogFiles(logPath)
 	pinCids(ipfsShell, unpinnedCids)
 
-	// Write final logs at the end
-	defer writeLogFiles(logPath)
-
 	pageNum := 1
 	for paginator.HasMorePages() {
 		// Pagination is stateful in order to keep track of position and so should not be placed in a goroutine
@@ -91,6 +91,11 @@ func Migrate(bucket, prefix, ipfsUrl, logPath string) {
 		}
 		pageNum++
 	}
+
+	// Wait for all goroutines to complete, then write final logs.
+	wg.Wait()
+	writeLogFiles(logPath)
+	log.Printf("Migration complete: %d found, %d converted, %d pinned, %d unpinned", foundCount, convertedCount, pinnedCount, unpinnedCount)
 }
 
 func configureAWS() aws.Config {
@@ -145,6 +150,8 @@ func cidsFromPage(page *s3.ListObjectsV2Output) []string {
 			cid, err := blockToCid(name)
 			if err == nil {
 				convertedCount++
+				// Store the CID in the status map and mark it unpinned. Once it is pinned, the status will get updated.
+				pinMap.Store(cid, false)
 				log.Printf("conv:key=%s,cid=%s", key, cid)
 				cids = append(cids, cid)
 			} else {
@@ -161,15 +168,18 @@ func pinCids(ipfsShell *shell.Shell, cids []string) {
 		cidToPin := cid
 		// Pin the CID if it wasn't in the status map, or it was but marked unpinned.
 		if pinned, found := pinMap.Load(cidToPin); !found || !pinned.(bool) {
-			// Pin requests are standalone and can be in a goroutine for parallelism
+			// Pin requests are standalone and can be in a goroutine for parallelism. Use a wait group to synchronize
+			// completion of all goroutines.
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				err := pinCid(ipfsShell, cidToPin)
 				if err == nil {
 					log.Printf("pinned: %s", cidToPin)
 					pinMap.Store(cidToPin, true)
 				} else {
+					// Status was already stored as `false`
 					log.Printf("unpinned: %s, err=%s", cidToPin, err)
-					pinMap.Store(cidToPin, false)
 				}
 			}()
 		}
@@ -185,7 +195,7 @@ func pinCid(ipfsShell *shell.Shell, cid string) error {
 		err := ipfsShell.Request("pin/add", cid).Option("recursive", false).Exec(pinCtx, nil)
 		select {
 		case <-pinCtx.Done():
-			log.Printf("pin failed: %s", pinCtx.Err())
+			log.Printf("pin failed: cid=%s, err=%s", cid, pinCtx.Err())
 			return pinCtx.Err()
 		default:
 			// Fall through
@@ -248,6 +258,4 @@ func writeLogFiles(path string) {
 		}
 		return true
 	})
-
-	log.Printf("%d found, %d converted, %d pinned, %d unpinned", foundCount, convertedCount, pinnedCount, unpinnedCount)
 }
