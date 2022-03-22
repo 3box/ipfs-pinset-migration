@@ -1,0 +1,80 @@
+name: Publish images to Docker Hub and AWS ECR
+
+on:
+  push:
+    branches: [ develop, release-candidate, main ]
+    paths-ignore:
+      - '.github/**'
+  workflow_dispatch: # manually triggered
+
+jobs:
+  build_and_push:
+    name: Build and push
+    runs-on: ubuntu-latest
+    steps:
+      -
+        name: Check out the repo
+        uses: actions/checkout@v2
+      -
+        name: Set branch name
+        run: echo "BRANCH=${GITHUB_REF##*/}" >> $GITHUB_ENV
+      -
+        name: Set sha tag
+        run: |
+          SHA_TAG=$(git rev-parse --short=12 "${{ github.sha }}")
+          echo "SHA_TAG=$SHA_TAG" >> $GITHUB_ENV
+      -
+        name: Set main branch tag
+        if: ${{ env.BRANCH == 'main' }}
+        run: |
+          echo "ENV_TAG=prod" >> $GITHUB_ENV
+      -
+        name: Set rc branch tag
+        if: ${{ env.BRANCH == 'release-candidate' }}
+        run: |
+          echo "ENV_TAG=tnet" >> $GITHUB_ENV
+      -
+        name: Set develop branch tag
+        if: ${{ env.BRANCH == 'develop' || env.ENV_TAG == '' }}
+        run: |
+          echo "ENV_TAG=dev" >> $GITHUB_ENV
+      -
+        name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_DEFAULT_REGION }}
+      -
+        name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+      -
+        name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+      -
+        name: Login to DockerHub
+        uses: docker/login-action@v1
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      -
+        name: Build and push js-ceramic image
+        env:
+          IMAGE_ID_1: "3boxlabs/ipfs-pinset-migration"
+          IMAGE_ID_2: "${{ steps.login-ecr.outputs.registry }}/go-ipfs-pinset_migration"
+        run: |
+          EXTRA_TAGS=""
+          if [[ "${{ env.ENV_TAG }}" == "prod" ]]; then
+            EXTRA_TAGS="--tag $IMAGE_ID_1:latest --tag $IMAGE_ID_2:latest"
+          fi
+          docker buildx build . --file Dockerfile.daemon --output 'type=image,push=true' \
+            --tag $IMAGE_ID_1:${{ env.ENV_TAG }} \
+            --tag $IMAGE_ID_1:${{ env.SHA_TAG }} \
+            --tag $IMAGE_ID_1:${{ github.sha }}  \
+            --tag $IMAGE_ID_1:${{ env.BRANCH }}  \
+            --tag $IMAGE_ID_2:${{ env.ENV_TAG }} \
+            --tag $IMAGE_ID_2:${{ env.SHA_TAG }} \
+            --tag $IMAGE_ID_2:${{ github.sha }}  \
+            --tag $IMAGE_ID_2:${{ env.BRANCH }}  \
+            $EXTRA_TAGS
