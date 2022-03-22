@@ -150,8 +150,6 @@ func cidsFromPage(page *s3.ListObjectsV2Output) []string {
 			cid, err := blockToCid(name)
 			if err == nil {
 				convertedCount++
-				// Store the CID in the status map and mark it unpinned. Once it is pinned, the status will get updated.
-				pinMap.Store(cid, false)
 				log.Printf("conv:key=%s,cid=%s", key, cid)
 				cids = append(cids, cid)
 			} else {
@@ -178,8 +176,8 @@ func pinCids(ipfsShell *shell.Shell, cids []string) {
 					log.Printf("pinned: %s", cidToPin)
 					pinMap.Store(cidToPin, true)
 				} else {
-					// Status was already stored as `false`
 					log.Printf("unpinned: %s, err=%s", cidToPin, err)
+					pinMap.Store(cidToPin, false)
 				}
 			}()
 		}
