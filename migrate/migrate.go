@@ -46,7 +46,7 @@ var (
 	unpinnedCount  = 0
 )
 
-func Migrate(bucket, prefix, ipfsUrl, statusPath string) {
+func Migrate(bucket, prefix, ipfsUrl, logPath string) {
 	// Setup S3 access and pagination
 	cfg := configureAWS()
 	s3Client := s3.NewFromConfig(cfg)
@@ -55,20 +55,20 @@ func Migrate(bucket, prefix, ipfsUrl, statusPath string) {
 		Prefix: aws.String(prefix),
 	})
 
-	// Create the status file path, and ignore if it already exists.
-	if err := os.MkdirAll(statusPath, 0770); err != nil {
+	// Create the log file path, and ignore if it already exists.
+	if err := os.MkdirAll(logPath, 0770); err != nil {
 		log.Fatal(err)
 	}
 
 	// Use a single shell to IPFS since it uses a thread-safe HTTP client
 	ipfsShell := shell.NewShell(ipfsUrl)
 
-	// If statuses were already written previously, load them, and pin any unpinned CIDs.
-	_, unpinnedCids := readPinStatuses(statusPath)
+	// If logs were written previously, load them, and pin any unpinned CIDs.
+	_, unpinnedCids := readLogFiles(logPath)
 	pinCids(ipfsShell, unpinnedCids)
 
-	// Write final statuses at the end
-	defer writePinStatuses(statusPath)
+	// Write final logs at the end
+	defer writeLogFiles(logPath)
 
 	pageNum := 1
 	for paginator.HasMorePages() {
@@ -201,14 +201,14 @@ func pinCid(ipfsShell *shell.Shell, cid string) error {
 	return errors.New("maximum retries exceeded")
 }
 
-func readPinStatuses(statusPath string) ([]string, []string) {
-	pinnedCids := readPinStatus(statusPath + "/" + PinnedFilename, true)
-	unpinnedCids := readPinStatus(statusPath + "/" + UnpinnedFilename, false)
+func readLogFiles(path string) ([]string, []string) {
+	pinnedCids := readLogFile(path + "/" + PinnedFilename, true)
+	unpinnedCids := readLogFile(path + "/" + UnpinnedFilename, false)
 	log.Printf("read pinned=%d, unpinned=%d", len(pinnedCids), len(unpinnedCids))
 	return pinnedCids, unpinnedCids
 }
 
-func readPinStatus(path string, status bool) []string {
+func readLogFile(path string, status bool) []string {
 	cids := make([]string, 0)
 	f, err := os.OpenFile(path, os.O_RDONLY | os.O_CREATE, 0755)
 	defer func(p *os.File) { _ = p.Close() }(f)
@@ -223,7 +223,7 @@ func readPinStatus(path string, status bool) []string {
 	return cids
 }
 
-func writePinStatuses(path string) {
+func writeLogFiles(path string) {
 	pinned, err := os.OpenFile(path + "/" + PinnedFilename, os.O_WRONLY | os.O_TRUNC, 0755)
 	defer func(p *os.File) { _ = p.Close() }(pinned)
 	if err != nil {
@@ -248,5 +248,6 @@ func writePinStatuses(path string) {
 		}
 		return true
 	})
+
 	log.Printf("%d found, %d converted, %d pinned, %d unpinned", foundCount, convertedCount, pinnedCount, unpinnedCount)
 }
