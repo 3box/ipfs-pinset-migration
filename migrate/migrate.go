@@ -125,6 +125,7 @@ func nextPage(paginator *s3.ListObjectsV2Paginator) (*s3.ListObjectsV2Output, er
 		return page, err
 	}
 	for i := 0; i < NumRequestRetries; i++ {
+		// Ref: https://stackoverflow.com/questions/45617758/defer-in-the-loop-what-will-be-better
 		if page, err := nextFn(); err == nil {
 			return page, nil
 		}
@@ -192,7 +193,6 @@ func pinCid(ipfsShell *shell.Shell, cid string) error {
 		return err
 	}
 	for i := 0; i < NumRequestRetries; i++ {
-		// Ref: https://stackoverflow.com/questions/45617758/defer-in-the-loop-what-will-be-better
 		if err := pinFn(); err == nil {
 			return nil
 		}
