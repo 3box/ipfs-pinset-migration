@@ -25,6 +25,7 @@ const (
 	PaginationSleep  = 1 * time.Second
 
 	RequestTimeout    = 3 * time.Second
+	RequestDelay      = 5 * time.Millisecond
 	RetryDelay        = 250 * time.Millisecond
 	NumRequestRetries = 3
 
@@ -180,6 +181,7 @@ func pinCids(ipfsShell *shell.Shell, cids []string) {
 					pinMap.Store(cidToPin, false)
 				}
 			}()
+			time.Sleep(RequestDelay)
 		}
 	}
 }
