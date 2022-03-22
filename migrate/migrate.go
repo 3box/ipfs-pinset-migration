@@ -79,7 +79,12 @@ func Migrate(bucket, prefix, ipfsUrl, statusPath string) {
 			break
 		}
 		log.Printf("retrieved page: %d", pageNum)
-		pinCids(ipfsShell, cidsFromPage(page))
+		cids := cidsFromPage(page)
+		if len(cids) > 0 {
+			pinCids(ipfsShell, cids)
+		} else {
+			log.Printf("no CIDs found on page: %d", pageNum)
+		}
 		if (pageNum % PagesBeforeSleep) == 0 {
 			// Sleep before pulling more pages to avoid S3 throttling
 			time.Sleep(PaginationSleep)
