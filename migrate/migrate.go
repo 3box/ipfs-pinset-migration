@@ -126,7 +126,7 @@ func cidsFromPage(page *s3.ListObjectsV2Output) []string {
 				log.Printf("conv:key=%s,cid=%s", key, cid)
 				cids = append(cids, cid)
 			} else {
-				log.Printf("fail:key=%s,cid=unknown", key)
+				log.Printf("fail:key=%s,err:%s", key, err)
 			}
 		}
 	}
@@ -156,6 +156,7 @@ func pinCids(ipfsShell *shell.Shell, cids []string) {
 
 func pinCid(ipfsShell *shell.Shell, cid string) error {
 	for i := 0; i < NumRequestRetries; i++ {
+		// Ref: https://stackoverflow.com/questions/45617758/defer-in-the-loop-what-will-be-better
 		err := func() error {
 			// Use a new child context with timeout for each pin request attempt
 			pinCtx, pinCancel := context.WithTimeout(ctx, RequestTimeout)
