@@ -127,12 +127,10 @@ func nextPage(paginator *s3.ListObjectsV2Paginator) (*s3.ListObjectsV2Output, er
 		page, err := paginator.NextPage(pageCtx)
 		select {
 		case <-pageCtx.Done():
-			log.Printf("page failed: %s", pageCtx.Err())
 			return nil, pageCtx.Err()
 		default:
-			// Fall through and return result
+			return page, err
 		}
-		return page, err
 	}
 	for i := 0; i < NumPageRequestRetries; i++ {
 		// Ref: https://stackoverflow.com/questions/45617758/defer-in-the-loop-what-will-be-better
@@ -192,7 +190,6 @@ func pinCids(ipfsShell *shell.Shell, cids []string) {
 			time.Sleep(PinRequestDelay)
 		}
 	}
-	log.Printf("cids pinned: %d", len(cids))
 }
 
 func pinCid(ipfsShell *shell.Shell, cid string) error {
@@ -204,12 +201,10 @@ func pinCid(ipfsShell *shell.Shell, cid string) error {
 		err := ipfsShell.Request("pin/add", cid).Option("recursive", false).Exec(pinCtx, nil)
 		select {
 		case <-pinCtx.Done():
-			log.Printf("pin failed: cid=%s, err=%s", cid, pinCtx.Err())
 			return pinCtx.Err()
 		default:
-			// Fall through
+			return err
 		}
-		return err
 	}
 	for i := 0; i < NumPinRequestRetries; i++ {
 		if err := pinFn(); err == nil {
