@@ -6,7 +6,7 @@ Migrate pins from S3 bucket to go-ipfs
 
 ```sh
 cd cmd/ipfs-pinset-migration
-go run main.go --bucket=ceramic-dev-node --prefix=ipfs/pins --ipfs=localhost:5001
+go run main.go --bucket=ceramic-dev-node --prefix=ipfs/pins --ipfs=localhost:5001 --logPath=/tmp
 ```
 
 With Docker
@@ -20,5 +20,6 @@ docker run \
 -e S3_PINSET_BUCKET_NAME= \
 -e S3_PINSET_BUCKET_PREFIX= \
 -e IPFS_API_URL= \
+-e LOG_PATH = \
 ipfs-pinset-migration
 ```

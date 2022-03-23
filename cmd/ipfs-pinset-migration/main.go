@@ -12,6 +12,7 @@ var (
 	bucket     string
 	pinsPrefix string
 	ipfsApiUrl string
+	logPath    string
 )
 
 func main() {
@@ -22,11 +23,12 @@ func main() {
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
-	migrate.Migrate(bucket, pinsPrefix, ipfsApiUrl)
+	migrate.Migrate(bucket, pinsPrefix, ipfsApiUrl, logPath)
 }
 
 func init() {
 	flag.StringVarP(&bucket, "bucket", "b", "", "S3 bucket name")
 	flag.StringVarP(&pinsPrefix, "prefix", "p", "", "S3 bucket prefix for pins")
 	flag.StringVarP(&ipfsApiUrl, "ipfs", "i", "localhost:5001", "IPFS API url")
+	flag.StringVarP(&logPath, "logPath", "l", "/tmp", "Path to store log files")
 }
