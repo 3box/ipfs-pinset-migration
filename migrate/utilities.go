@@ -4,6 +4,7 @@ import (
 	"log"
 	"math"
 	"path"
+	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -67,29 +68,32 @@ func s3Paginator(bucket, prefix string) *s3.ListObjectsV2Paginator {
 
 func cidsFromS3Page(page *s3.ListObjectsV2Output) []string {
 	cids := make([]string, 0, page.KeyCount)
-	prevFoundCount := foundCount
-	prevConvertedCount := convertedCount
-	unpinnedCount := 0
+	pageKeysFound := uint32(0)
+	pageKeysConverted := uint32(0)
+	pageCidsUnpinned := uint32(0)
 	for _, object := range page.Contents {
 		if object.Size != 0 { // filter out directories
-			foundCount++
+			pageKeysFound++
 			// Convert file name to CID
 			key := aws.ToString(object.Key)
 			_, name := path.Split(key)
 			cid, err := blockToCid(name)
 			if err == nil {
-				convertedCount++
+				pageKeysConverted++
 				if isCidUnpinned(cid) {
+					pageCidsUnpinned++
 					cids = append(cids, cid)
-					unpinnedCount++
 				}
 			} else {
 				log.Printf("convert failed: key=%s, err:%s", key, err)
 			}
 		}
 	}
-	log.Printf("keys found: %d", foundCount-prevFoundCount)
-	log.Printf("keys converted: %d", convertedCount-prevConvertedCount)
-	log.Printf("unpinned cids: %d", unpinnedCount)
+	atomic.AddUint32(&keyFoundCount, pageKeysFound)
+	atomic.AddUint32(&keyConvertedCount, pageKeysConverted)
+	atomic.AddUint32(&pinRemainingCount, pageCidsUnpinned)
+	log.Printf("keys found: %d", pageKeysFound)
+	log.Printf("keys converted: %d", pageKeysConverted)
+	log.Printf("unpinned cids: %d", pageCidsUnpinned)
 	return cids
 }

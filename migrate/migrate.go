@@ -39,9 +39,6 @@ var (
 	// Wait group for goroutines
 	wg = sync.WaitGroup{}
 
-	// Keep track of how many pins are left
-	pinsRemaining = uint32(0)
-
 	// Use a concurrent map to keep track of the pin status of CIDs read from S3
 	pinMap = sync.Map{}
 
@@ -49,10 +46,11 @@ var (
 	pinCh = make(chan int, PinOutstandingReqs)
 
 	// Stats
-	foundCount      = 0
-	convertedCount  = 0
-	pinSuccessCount = 0
-	pinFailureCount = 0
+	keyFoundCount     = uint32(0)
+	keyConvertedCount = uint32(0)
+	pinSuccessCount   = uint32(0)
+	pinFailureCount   = uint32(0)
+	pinRemainingCount = uint32(0)
 )
 
 func Migrate(bucket, prefix, ipfsUrl, logPath string) {
@@ -73,7 +71,7 @@ func Migrate(bucket, prefix, ipfsUrl, logPath string) {
 	// Make a final attempt to pin any CIDs we failed to pin above
 	pinFailedCids(logPath, ipfsShell)
 
-	log.Printf("Done. Migration results: found %d, converted %d, pin success %d, pin failure %d, elapsed=%s", foundCount, convertedCount, pinSuccessCount, pinFailureCount, time.Since(start))
+	log.Printf("Done. Migration results: found %d, converted %d, pin success %d, pin failure %d, elapsed=%s", atomic.LoadUint32(&keyFoundCount), atomic.LoadUint32(&keyConvertedCount), atomic.LoadUint32(&pinSuccessCount), atomic.LoadUint32(&pinFailureCount), time.Since(start))
 }
 
 func pinFailedCids(logPath string, ipfsShell *shell.Shell) {
@@ -92,7 +90,7 @@ func migratePinstore(bucket, prefix, logPath string, ipfsShell *shell.Shell) {
 		// Pagination is stateful in order to keep track of position and so should not be placed in a goroutine
 		page, err := nextPage(paginator)
 		if err != nil { // We've retried and still failed, exit the loop.
-			log.Printf("retrieve page failed: %s", err)
+			log.Printf("pagination failed: %s", err)
 			break
 		}
 		log.Printf("retrieved page: %d", pageNum)
@@ -164,8 +162,6 @@ func pinCids(ipfsShell *shell.Shell, cids []string) {
 		return
 	}
 
-	atomic.AddUint32(&pinsRemaining, uint32(len(cids)))
-
 	// Split the slice into batches and use a goroutine to pin all the CIDs in a batch
 	batches := sliceBatcher(cids, PinBatchSize)
 	for _, batch := range batches {
@@ -182,11 +178,15 @@ func pinCids(ipfsShell *shell.Shell, cids []string) {
 			start := time.Now()
 			err := pinCidBatch(ipfsShell, batchToPin)
 			elapsed := time.Since(start)
+			count := uint32(len(batchToPin))
+			// Decrement the number of pins remaining regardless of whether pinning succeeded or failed
+			atomic.AddUint32(&pinRemainingCount, -count)
 			if err == nil {
-				atomic.AddUint32(&pinsRemaining, -uint32(len(batchToPin)))
-				log.Printf("pinned in %s, remaining cids=%d", elapsed, atomic.LoadUint32(&pinsRemaining))
+				atomic.AddUint32(&pinSuccessCount, count)
+				log.Printf("pinned batch in %s, remaining cids=%d", elapsed, atomic.LoadUint32(&pinRemainingCount))
 			} else {
-				log.Printf("pin failed in %s, remaining cids=%d, err=%s", elapsed, atomic.LoadUint32(&pinsRemaining), err)
+				atomic.AddUint32(&pinFailureCount, count)
+				log.Printf("pin failed in %s, remaining cids=%d, err=%s", elapsed, atomic.LoadUint32(&pinRemainingCount), err)
 			}
 		}()
 	}
@@ -236,6 +236,8 @@ func pinCidBatch(ipfsShell *shell.Shell, cids []string) error {
 func readLogFiles(path string) ([]string, []string) {
 	pinSuccessCids := readLogFile(path+"/"+PinSuccessFilename, true)
 	pinFailureCids := readLogFile(path+"/"+PinFailureFilename, false)
+	atomic.AddUint32(&pinSuccessCount, uint32(len(pinSuccessCids)))
+	atomic.AddUint32(&pinFailureCount, uint32(len(pinFailureCids)))
 	log.Printf("read: pinSuccess=%d, pinFailure=%d", len(pinSuccessCids), len(pinFailureCids))
 	return pinSuccessCids, pinFailureCids
 }
@@ -275,10 +277,8 @@ func writeLogFiles(path string) {
 		// Ignore errors writing individual CIDs to file
 		if value.(bool) {
 			_, _ = fmt.Fprintln(pinSuccess, key.(string))
-			pinSuccessCount++
 		} else {
 			_, _ = fmt.Fprintln(pinFailure, key.(string))
-			pinFailureCount++
 		}
 		return true
 	})
