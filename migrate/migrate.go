@@ -66,10 +66,7 @@ func Migrate(bucket, prefix, ipfsUrl, logPath string) {
 	pinFailedCids(logPath, ipfsShell)
 
 	// Paginate through the pinstore and attempt to re-pin them
-	migratePinstore(bucket, prefix, logPath, ipfsShell)
-
-	// Make a final attempt to pin any CIDs we failed to pin above
-	pinSuccessCount, pinFailureCount := pinFailedCids(logPath, ipfsShell)
+	pinSuccessCount, pinFailureCount := migratePinstore(bucket, prefix, logPath, ipfsShell)
 
 	log.Printf(
 		"Done. Migration results: found %d, converted %d, pin success %d, pin failure %d, elapsed=%s",
