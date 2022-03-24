@@ -63,7 +63,7 @@ jobs:
         env:
           IMAGE_ID_1: "3boxlabs/ipfs-pinset-migration"
           IMAGE_ID_2: "${{ steps.login-ecr.outputs.registry }}/go-ipfs-pinset_migration"
-          IMAGE_ID_3: "${{ steps.login-ecr.outputs.registry }}/ipfs-pinset-migration-${{ env.ENV_TAG }}"
+          IMAGE_ID_3: "${{ steps.login-ecr.outputs.registry }}/ipfs-pinset-migration-dev"
         run: |
           EXTRA_TAGS=""
           if [[ "${{ env.ENV_TAG }}" == "prod" ]]; then
