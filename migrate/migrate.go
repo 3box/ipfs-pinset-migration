@@ -67,18 +67,25 @@ func Migrate(bucket, prefix, ipfsUrl, logPath string) {
 	ipfsShell := shell.NewShell(ipfsUrl)
 
 	// If logs were written previously, load them, and pin any previous pin failure CIDs.
+	pinFailedCids(logPath, ipfsShell)
+	migratePinstore(bucket, prefix, logPath, ipfsShell)
+
+	// Make a final attempt to pin any CIDs we failed to pin above
+	pinFailedCids(logPath, ipfsShell)
+
+	log.Printf("Done. Migration results: found %d, converted %d, pin success %d, pin failure %d, elapsed=%s", foundCount, convertedCount, pinSuccessCount, pinFailureCount, time.Since(start))
+}
+
+func pinFailedCids(logPath string, ipfsShell *shell.Shell) {
 	_, pinFailureCids := readLogFiles(logPath)
 	pinCids(ipfsShell, pinFailureCids)
-
-	paginatePinstore(bucket, prefix, ipfsShell)
 
 	// Wait for all goroutines to complete, then write final logs.
 	wg.Wait()
 	writeLogFiles(logPath)
-	log.Printf("Done. Migration results: found %d, converted %d, pin success %d, pin failure %d, elapsed=%s", foundCount, convertedCount, pinSuccessCount, pinFailureCount, time.Since(start))
 }
 
-func paginatePinstore(bucket, prefix string, ipfsShell *shell.Shell) {
+func migratePinstore(bucket, prefix, logPath string, ipfsShell *shell.Shell) {
 	paginator := s3Paginator(bucket, prefix)
 	pageNum := 1
 	for paginator.HasMorePages() {
@@ -107,6 +114,9 @@ func paginatePinstore(bucket, prefix string, ipfsShell *shell.Shell) {
 		}
 		pageNum++
 	}
+	// Wait for all goroutines to complete, then write final logs.
+	wg.Wait()
+	writeLogFiles(logPath)
 }
 
 func nextPage(paginator *s3.ListObjectsV2Paginator) (*s3.ListObjectsV2Output, error) {
