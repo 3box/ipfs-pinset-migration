@@ -6,62 +6,53 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"os"
-	"path"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	ds "github.com/ipfs/go-datastore"
 	shell "github.com/ipfs/go-ipfs-api"
-	dshelp "github.com/ipfs/go-ipfs-ds-help"
 )
 
 const (
-	PagesBeforeSleep = 5 // Up to 5000 entries given a default page size of 1000
-	PaginationSleep  = 1 * time.Second
+	PagesBeforeSleep     = 5 // Up to 5000 entries given a default page size of 1000
+	PaginationSleep      = 1 * time.Second
+	PaginationRetryDelay = 250 * time.Millisecond
+	PaginationTimeout    = 3 * time.Second
+	NumPaginationRetries = 3
 
-	PageRetryDelay        = 250 * time.Millisecond
-	PageRequestTimeout    = 3 * time.Second
-	NumPageRequestRetries = 3
-
-	PinRetryDelay        = 250 * time.Millisecond
-	PinRequestDelay      = 10 * time.Millisecond
-	PinRequestTimeout    = 3 * time.Second
-	NumPinRequestRetries = 3
+	PinRetryDelay      = 250 * time.Millisecond
+	PinTimeout         = 10 * time.Second
+	NumPinRetries      = 3
+	PinBatchSize       = 40
+	PinOutstandingReqs = 50 // For backpressure
 
 	PinSuccessFilename = "pinSuccess.txt"
 	PinFailureFilename = "pinFailure.txt"
 )
 
 var (
-	// Use a concurrent map to keep track of the pin status of CIDs read from S3
-	pinMap = sync.Map{}
-
 	// Default context
 	ctx = context.Background()
 
 	// Wait group for goroutines
 	wg = sync.WaitGroup{}
 
+	// Use a concurrent map to keep track of the pin status of CIDs read from S3
+	pinMap = sync.Map{}
+
+	// Use a buffered channel to apply backpressure and limit the number of outstanding pin requests to IPFS
+	pinCh = make(chan int, PinOutstandingReqs)
+
 	// Stats
-	foundCount      = 0
-	convertedCount  = 0
-	pinSuccessCount = 0
-	pinFailureCount = 0
+	keysFoundCount     = uint32(0)
+	keysConvertedCount = uint32(0)
+	cidsNotPinnedCount = uint32(0)
 )
 
 func Migrate(bucket, prefix, ipfsUrl, logPath string) {
-	// Setup S3 access and pagination
-	cfg := configureAWS()
-	s3Client := s3.NewFromConfig(cfg)
-	paginator := s3.NewListObjectsV2Paginator(s3Client, &s3.ListObjectsV2Input{
-		Bucket: aws.String(bucket),
-		Prefix: aws.String(prefix),
-	})
+	start := time.Now()
 
 	// Create the log file path, and ignore if it already exists.
 	if err := os.MkdirAll(logPath, 0770); err != nil {
@@ -72,23 +63,52 @@ func Migrate(bucket, prefix, ipfsUrl, logPath string) {
 	ipfsShell := shell.NewShell(ipfsUrl)
 
 	// If logs were written previously, load them, and pin any previous pin failure CIDs.
+	pinFailedCids(logPath, ipfsShell)
+
+	// Paginate through the pinstore and attempt to re-pin them
+	pinSuccessCount, pinFailureCount := migratePinstore(bucket, prefix, logPath, ipfsShell)
+
+	log.Printf(
+		"Done. Migration results: found %d, converted %d, pin success %d, pin failure %d, elapsed=%s",
+		keysFoundCount,
+		keysConvertedCount,
+		pinSuccessCount,
+		pinFailureCount,
+		time.Since(start),
+	)
+}
+
+func pinFailedCids(logPath string, ipfsShell *shell.Shell) (int, int) {
 	_, pinFailureCids := readLogFiles(logPath)
 	pinCids(ipfsShell, pinFailureCids)
 
+	// Wait for all goroutines to complete, then write final logs.
+	wg.Wait()
+	return writeLogFiles(logPath)
+}
+
+func migratePinstore(bucket, prefix, logPath string, ipfsShell *shell.Shell) (int, int) {
+	paginator := s3Paginator(bucket, prefix)
 	pageNum := 1
 	for paginator.HasMorePages() {
 		// Pagination is stateful in order to keep track of position and so should not be placed in a goroutine
 		page, err := nextPage(paginator)
 		if err != nil { // We've retried and still failed, exit the loop.
-			log.Printf("retrieve page failed: %s", err)
+			log.Printf("pagination failed: %s", err)
 			break
 		}
 		log.Printf("retrieved page: %d", pageNum)
-		cids := cidsFromPage(page)
+		cids := cidsFromS3Page(page)
 		if len(cids) > 0 {
-			pinCids(ipfsShell, cids)
+			// Pin requests are standalone and can be in a goroutine for parallelism. Use a wait group to synchronize
+			// completion of all goroutines.
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				pinCids(ipfsShell, cids)
+			}()
 		} else {
-			log.Printf("no CIDs found on page %d", pageNum)
+			log.Printf("no unpinned cids found on page %d", pageNum)
 		}
 		if (pageNum % PagesBeforeSleep) == 0 {
 			// Sleep before pulling more pages to avoid S3 throttling
@@ -99,118 +119,120 @@ func Migrate(bucket, prefix, ipfsUrl, logPath string) {
 
 	// Wait for all goroutines to complete, then write final logs.
 	wg.Wait()
-	writeLogFiles(logPath)
-	log.Printf("Done. Migration results: found %d, converted %d, pin success %d, pin failure %d", foundCount, convertedCount, pinSuccessCount, pinFailureCount)
-}
-
-func configureAWS() aws.Config {
-	cfg, err := config.LoadDefaultConfig(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-	return cfg
-}
-
-func blockToCid(key string) (string, error) {
-	// All files will be either in `dag-jose` (multicodec 0x85) or `dag-cbor` (multicodec 0x71) format. Since `dag-cbor`
-	// is a superset of `dag-jose`, use `dag-cbor` for the migration.
-	cid, err := dshelp.DsKeyToCidV1(ds.NewKey(key), 0x71)
-	return cid.String(), err
+	return writeLogFiles(logPath)
 }
 
 func nextPage(paginator *s3.ListObjectsV2Paginator) (*s3.ListObjectsV2Output, error) {
 	nextFn := func() (*s3.ListObjectsV2Output, error) {
 		// Use a new child context with timeout for each page retrieval attempt
-		pageCtx, pageCancel := context.WithTimeout(ctx, PageRequestTimeout)
+		pageCtx, pageCancel := context.WithTimeout(ctx, PaginationTimeout)
 		defer pageCancel()
 
-		page, err := paginator.NextPage(pageCtx)
-		select {
-		case <-pageCtx.Done():
-			return nil, pageCtx.Err()
-		default:
-			return page, err
+		type pageResult struct {
+			page *s3.ListObjectsV2Output
+			err  error
+		}
+		// Buffered channel with a single slot
+		ch := make(chan pageResult, 1)
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			page, err := paginator.NextPage(pageCtx)
+			ch <- pageResult{page: page, err: err}
+		}()
+		for {
+			select {
+			case val := <-ch:
+				return val.page, val.err
+			case <-pageCtx.Done():
+				return nil, pageCtx.Err()
+			}
 		}
 	}
-	for i := 0; i < NumPageRequestRetries; i++ {
+	for i := 0; i < NumPaginationRetries; i++ {
 		// Ref: https://stackoverflow.com/questions/45617758/defer-in-the-loop-what-will-be-better
 		if page, err := nextFn(); err == nil {
 			return page, nil
+		} else {
+			log.Printf("pagination failed: attempt=%d, err=%s", i+1, err)
 		}
-		time.Sleep(time.Duration(math.Pow(2, float64(i))) * PageRetryDelay) // exponential backoff
+		exponentialBackoff(i, NumPaginationRetries, PaginationRetryDelay)
 	}
 	return nil, errors.New("maximum retries exceeded")
 }
 
-func cidsFromPage(page *s3.ListObjectsV2Output) []string {
-	cids := make([]string, 0, page.KeyCount)
-	prevFoundCount := foundCount
-	prevConvertedCount := convertedCount
-	for _, object := range page.Contents {
-		if object.Size != 0 { // filter out directories
-			foundCount++
-			// Convert file name to CID
-			key := aws.ToString(object.Key)
-			_, name := path.Split(key)
-			cid, err := blockToCid(name)
+func pinCids(ipfsShell *shell.Shell, cids []string) {
+	if len(cids) == 0 {
+		return
+	}
+
+	// Split the slice into batches and use a goroutine to pin all the CIDs in a batch
+	batches := sliceBatcher(cids, PinBatchSize)
+	for _, batch := range batches {
+		// Ref: https://github.com/golang/go/wiki/CommonMistakes#using-goroutines-on-loop-iterator-variables
+		batchToPin := batch
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			// Apply backpressure
+			acquireReqToken()
+			defer releaseReqToken()
+
+			start := time.Now()
+			err := pinCidBatch(ipfsShell, batchToPin)
+			elapsed := time.Since(start)
+
+			// Decrement the number of pins remaining regardless of whether pinning succeeded or failed
+			count := uint32(len(batchToPin))
+			cidsNotPinned := atomic.AddUint32(&cidsNotPinnedCount, -count)
 			if err == nil {
-				convertedCount++
-				log.Printf("converted: key=%s, cid=%s", key, cid)
-				cids = append(cids, cid)
+				log.Printf("pinned batch in %s, remaining cids=%d", elapsed, cidsNotPinned)
 			} else {
-				log.Printf("convert failed: key=%s, err:%s", key, err)
+				log.Printf("pin failed in %s, remaining cids=%d, err=%s", elapsed, cidsNotPinned, err)
+			}
+		}()
+	}
+}
+
+func pinCidBatch(ipfsShell *shell.Shell, cids []string) error {
+	storeFn := func(err error) error {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for _, cid := range cids {
+				pinMap.Store(cid, err == nil)
+			}
+		}()
+		return err
+	}
+	pinFn := func() error {
+		// Use a new child context with timeout for each pin request attempt
+		pinCtx, pinCancel := context.WithTimeout(ctx, PinTimeout)
+		defer pinCancel()
+
+		ch := make(chan error, 1)
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ch <- ipfsShell.Request("pin/add", cids...).Option("recursive", false).Exec(pinCtx, nil)
+		}()
+		for {
+			select {
+			case err := <-ch:
+				return storeFn(err)
+			case <-pinCtx.Done():
+				return storeFn(pinCtx.Err())
 			}
 		}
 	}
-	log.Printf("keys found: %d", foundCount-prevFoundCount)
-	log.Printf("keys converted: %d", convertedCount-prevConvertedCount)
-	return cids
-}
-
-func pinCids(ipfsShell *shell.Shell, cids []string) {
-	for _, cid := range cids {
-		// Ref: https://github.com/golang/go/wiki/CommonMistakes#using-goroutines-on-loop-iterator-variables
-		cidToPin := cid
-		// Pin the CID if it wasn't in the status map, or it was but marked pin failure.
-		if pinSuccess, found := pinMap.Load(cidToPin); !found || !pinSuccess.(bool) {
-			// Pin requests are standalone and can be in a goroutine for parallelism. Use a wait group to synchronize
-			// completion of all goroutines.
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				err := pinCid(ipfsShell, cidToPin)
-				if err == nil {
-					log.Printf("pin success: cid=%s", cidToPin)
-					pinMap.Store(cidToPin, true)
-				} else {
-					log.Printf("pin failure: cid=%s, err=%s", cidToPin, err)
-					pinMap.Store(cidToPin, false)
-				}
-			}()
-			time.Sleep(PinRequestDelay)
-		}
-	}
-}
-
-func pinCid(ipfsShell *shell.Shell, cid string) error {
-	pinFn := func() error {
-		// Use a new child context with timeout for each pin request attempt
-		pinCtx, pinCancel := context.WithTimeout(ctx, PinRequestTimeout)
-		defer pinCancel()
-
-		err := ipfsShell.Request("pin/add", cid).Option("recursive", false).Exec(pinCtx, nil)
-		select {
-		case <-pinCtx.Done():
-			return pinCtx.Err()
-		default:
-			return err
-		}
-	}
-	for i := 0; i < NumPinRequestRetries; i++ {
+	for i := 0; i < NumPinRetries; i++ {
 		if err := pinFn(); err == nil {
 			return nil
 		}
-		time.Sleep(time.Duration(math.Pow(2, float64(i))) * PinRetryDelay) // exponential backoff
+		exponentialBackoff(i, NumPinRetries, PinRetryDelay)
 	}
 	return errors.New("maximum retries exceeded")
 }
@@ -218,6 +240,10 @@ func pinCid(ipfsShell *shell.Shell, cid string) error {
 func readLogFiles(path string) ([]string, []string) {
 	pinSuccessCids := readLogFile(path+"/"+PinSuccessFilename, true)
 	pinFailureCids := readLogFile(path+"/"+PinFailureFilename, false)
+
+	// Set the number of CIDs remaining to be pinned to the number of CIDs that failed to be pinned previously
+	atomic.StoreUint32(&cidsNotPinnedCount, uint32(len(pinFailureCids)))
+
 	log.Printf("read: pinSuccess=%d, pinFailure=%d", len(pinSuccessCids), len(pinFailureCids))
 	return pinSuccessCids, pinFailureCids
 }
@@ -237,31 +263,37 @@ func readLogFile(path string, status bool) []string {
 	return cids
 }
 
-func writeLogFiles(path string) {
+func writeLogFiles(path string) (int, int) {
+	pinSuccessCount := 0
+	pinFailureCount := 0
+
 	pinSuccessPath := path + "/" + PinSuccessFilename
 	pinSuccess, err := os.OpenFile(pinSuccessPath, os.O_WRONLY|os.O_TRUNC, 0755)
 	defer func(p *os.File) { _ = p.Close() }(pinSuccess)
 	if err != nil {
 		log.Printf("file create failed: path=%s, err=%s", pinSuccessPath, err)
-		return
+		return 0, 0
 	}
 	pinFailurePath := path + "/" + PinFailureFilename
 	pinFailure, err := os.OpenFile(pinFailurePath, os.O_WRONLY|os.O_TRUNC, 0755)
 	defer func(u *os.File) { _ = u.Close() }(pinFailure)
 	if err != nil {
 		log.Printf("file create failed: path=%s, err=%s", pinFailurePath, err)
-		return
+		return 0, 0
 	}
 
 	pinMap.Range(func(key, value interface{}) bool {
 		// Ignore errors writing individual CIDs to file
 		if value.(bool) {
-			_, _ = fmt.Fprintln(pinSuccess, key.(string))
 			pinSuccessCount++
+			_, _ = fmt.Fprintln(pinSuccess, key.(string))
 		} else {
-			_, _ = fmt.Fprintln(pinFailure, key.(string))
 			pinFailureCount++
+			_, _ = fmt.Fprintln(pinFailure, key.(string))
 		}
 		return true
 	})
+
+	log.Printf("wrote: pinSuccess=%d, pinFailure=%d", pinSuccessCount, pinFailureCount)
+	return pinSuccessCount, pinFailureCount
 }
