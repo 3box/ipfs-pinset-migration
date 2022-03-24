@@ -186,7 +186,7 @@ func pinCids(ipfsShell *shell.Shell, cids []string) {
 				atomic.AddUint32(&pinsRemaining, -uint32(len(batchToPin)))
 				log.Printf("pinned in %s, remaining cids=%d", elapsed, atomic.LoadUint32(&pinsRemaining))
 			} else {
-				log.Printf("pin failed in %s, err=%s", elapsed, err)
+				log.Printf("pin failed in %s, remaining cids=%d, err=%s", elapsed, atomic.LoadUint32(&pinsRemaining), err)
 			}
 		}()
 	}
