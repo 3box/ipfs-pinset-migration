@@ -70,7 +70,7 @@ func cidsFromS3Page(page *s3.ListObjectsV2Output) []string {
 	cids := make([]string, 0, page.KeyCount)
 	pageKeysFound := uint32(0)
 	pageKeysConverted := uint32(0)
-	pageCidsUnpinned := uint32(0)
+	pageCidsNotPinned := uint32(0)
 	for _, object := range page.Contents {
 		if object.Size != 0 { // filter out directories
 			pageKeysFound++
@@ -81,7 +81,7 @@ func cidsFromS3Page(page *s3.ListObjectsV2Output) []string {
 			if err == nil {
 				pageKeysConverted++
 				if isCidUnpinned(cid) {
-					pageCidsUnpinned++
+					pageCidsNotPinned++
 					cids = append(cids, cid)
 				}
 			} else {
@@ -89,11 +89,9 @@ func cidsFromS3Page(page *s3.ListObjectsV2Output) []string {
 			}
 		}
 	}
-	atomic.AddUint32(&keyFoundCount, pageKeysFound)
-	atomic.AddUint32(&keyConvertedCount, pageKeysConverted)
-	atomic.AddUint32(&pinRemainingCount, pageCidsUnpinned)
-	log.Printf("keys found: %d", pageKeysFound)
-	log.Printf("keys converted: %d", pageKeysConverted)
-	log.Printf("unpinned cids: %d", pageCidsUnpinned)
+
+	log.Printf("keys found=%d, total found=%d", pageKeysFound, atomic.AddUint32(&keysFoundCount, pageKeysFound))
+	log.Printf("keys converted=%d, total converted=%d", pageKeysConverted, atomic.AddUint32(&keysConvertedCount, pageKeysConverted))
+	log.Printf("unpinned cids=%d, total unpinned=%d", pageCidsNotPinned, atomic.AddUint32(&cidsNotPinnedCount, pageCidsNotPinned))
 	return cids
 }

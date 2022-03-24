@@ -46,11 +46,9 @@ var (
 	pinCh = make(chan int, PinOutstandingReqs)
 
 	// Stats
-	keyFoundCount     = uint32(0)
-	keyConvertedCount = uint32(0)
-	pinSuccessCount   = uint32(0)
-	pinFailureCount   = uint32(0)
-	pinRemainingCount = uint32(0)
+	keysFoundCount     = uint32(0)
+	keysConvertedCount = uint32(0)
+	cidsNotPinnedCount = uint32(0)
 )
 
 func Migrate(bucket, prefix, ipfsUrl, logPath string) {
@@ -66,24 +64,33 @@ func Migrate(bucket, prefix, ipfsUrl, logPath string) {
 
 	// If logs were written previously, load them, and pin any previous pin failure CIDs.
 	pinFailedCids(logPath, ipfsShell)
+
+	// Paginate through the pinstore and attempt to re-pin them
 	migratePinstore(bucket, prefix, logPath, ipfsShell)
 
 	// Make a final attempt to pin any CIDs we failed to pin above
-	pinFailedCids(logPath, ipfsShell)
+	pinSuccessCount, pinFailureCount := pinFailedCids(logPath, ipfsShell)
 
-	log.Printf("Done. Migration results: found %d, converted %d, pin success %d, pin failure %d, elapsed=%s", atomic.LoadUint32(&keyFoundCount), atomic.LoadUint32(&keyConvertedCount), atomic.LoadUint32(&pinSuccessCount), atomic.LoadUint32(&pinFailureCount), time.Since(start))
+	log.Printf(
+		"Done. Migration results: found %d, converted %d, pin success %d, pin failure %d, elapsed=%s",
+		keysFoundCount,
+		keysConvertedCount,
+		pinSuccessCount,
+		pinFailureCount,
+		time.Since(start),
+	)
 }
 
-func pinFailedCids(logPath string, ipfsShell *shell.Shell) {
+func pinFailedCids(logPath string, ipfsShell *shell.Shell) (int, int) {
 	_, pinFailureCids := readLogFiles(logPath)
 	pinCids(ipfsShell, pinFailureCids)
 
 	// Wait for all goroutines to complete, then write final logs.
 	wg.Wait()
-	writeLogFiles(logPath)
+	return writeLogFiles(logPath)
 }
 
-func migratePinstore(bucket, prefix, logPath string, ipfsShell *shell.Shell) {
+func migratePinstore(bucket, prefix, logPath string, ipfsShell *shell.Shell) (int, int) {
 	paginator := s3Paginator(bucket, prefix)
 	pageNum := 1
 	for paginator.HasMorePages() {
@@ -112,9 +119,10 @@ func migratePinstore(bucket, prefix, logPath string, ipfsShell *shell.Shell) {
 		}
 		pageNum++
 	}
+
 	// Wait for all goroutines to complete, then write final logs.
 	wg.Wait()
-	writeLogFiles(logPath)
+	return writeLogFiles(logPath)
 }
 
 func nextPage(paginator *s3.ListObjectsV2Paginator) (*s3.ListObjectsV2Output, error) {
@@ -178,15 +186,14 @@ func pinCids(ipfsShell *shell.Shell, cids []string) {
 			start := time.Now()
 			err := pinCidBatch(ipfsShell, batchToPin)
 			elapsed := time.Since(start)
-			count := uint32(len(batchToPin))
+
 			// Decrement the number of pins remaining regardless of whether pinning succeeded or failed
-			atomic.AddUint32(&pinRemainingCount, -count)
+			count := uint32(len(batchToPin))
+			cidsNotPinned := atomic.AddUint32(&cidsNotPinnedCount, -count)
 			if err == nil {
-				atomic.AddUint32(&pinSuccessCount, count)
-				log.Printf("pinned batch in %s, remaining cids=%d", elapsed, atomic.LoadUint32(&pinRemainingCount))
+				log.Printf("pinned batch in %s, remaining cids=%d", elapsed, cidsNotPinned)
 			} else {
-				atomic.AddUint32(&pinFailureCount, count)
-				log.Printf("pin failed in %s, remaining cids=%d, err=%s", elapsed, atomic.LoadUint32(&pinRemainingCount), err)
+				log.Printf("pin failed in %s, remaining cids=%d, err=%s", elapsed, cidsNotPinned, err)
 			}
 		}()
 	}
@@ -236,8 +243,10 @@ func pinCidBatch(ipfsShell *shell.Shell, cids []string) error {
 func readLogFiles(path string) ([]string, []string) {
 	pinSuccessCids := readLogFile(path+"/"+PinSuccessFilename, true)
 	pinFailureCids := readLogFile(path+"/"+PinFailureFilename, false)
-	atomic.AddUint32(&pinSuccessCount, uint32(len(pinSuccessCids)))
-	atomic.AddUint32(&pinFailureCount, uint32(len(pinFailureCids)))
+
+	// Set the number of CIDs remaining to be pinned to the number of CIDs that failed to be pinned previously
+	atomic.StoreUint32(&cidsNotPinnedCount, uint32(len(pinFailureCids)))
+
 	log.Printf("read: pinSuccess=%d, pinFailure=%d", len(pinSuccessCids), len(pinFailureCids))
 	return pinSuccessCids, pinFailureCids
 }
@@ -257,29 +266,37 @@ func readLogFile(path string, status bool) []string {
 	return cids
 }
 
-func writeLogFiles(path string) {
+func writeLogFiles(path string) (int, int) {
+	pinSuccessCount := 0
+	pinFailureCount := 0
+
 	pinSuccessPath := path + "/" + PinSuccessFilename
 	pinSuccess, err := os.OpenFile(pinSuccessPath, os.O_WRONLY|os.O_TRUNC, 0755)
 	defer func(p *os.File) { _ = p.Close() }(pinSuccess)
 	if err != nil {
 		log.Printf("file create failed: path=%s, err=%s", pinSuccessPath, err)
-		return
+		return 0, 0
 	}
 	pinFailurePath := path + "/" + PinFailureFilename
 	pinFailure, err := os.OpenFile(pinFailurePath, os.O_WRONLY|os.O_TRUNC, 0755)
 	defer func(u *os.File) { _ = u.Close() }(pinFailure)
 	if err != nil {
 		log.Printf("file create failed: path=%s, err=%s", pinFailurePath, err)
-		return
+		return 0, 0
 	}
 
 	pinMap.Range(func(key, value interface{}) bool {
 		// Ignore errors writing individual CIDs to file
 		if value.(bool) {
+			pinSuccessCount++
 			_, _ = fmt.Fprintln(pinSuccess, key.(string))
 		} else {
+			pinFailureCount++
 			_, _ = fmt.Fprintln(pinFailure, key.(string))
 		}
 		return true
 	})
+
+	log.Printf("wrote: pinSuccess=%d, pinFailure=%d", pinSuccessCount, pinFailureCount)
+	return pinSuccessCount, pinFailureCount
 }
