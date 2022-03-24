@@ -52,6 +52,19 @@ var (
 )
 
 func Migrate(bucket, prefix, ipfsUrl, logPath string) {
+	// Log the configuration so that we know what settings are being used for the current run
+	log.Print("Configuration:")
+	log.Printf("\tPagesBeforeSleep=%d", PagesBeforeSleep)
+	log.Printf("\tPaginationSleep=%s", PaginationSleep)
+	log.Printf("\tPaginationRetryDelay=%s", PaginationRetryDelay)
+	log.Printf("\tPaginationTimeout=%s", PaginationTimeout)
+	log.Printf("\tNumPaginationRetries=%d", NumPaginationRetries)
+	log.Printf("\tPinRetryDelay=%s", PinRetryDelay)
+	log.Printf("\tPinTimeout=%s", PinTimeout)
+	log.Printf("\tNumPinRetries=%d", NumPinRetries)
+	log.Printf("\tPinBatchSize=%d", PinBatchSize)
+	log.Printf("\tPinOutstandingReqs=%d", PinOutstandingReqs)
+
 	start := time.Now()
 
 	// Create the log file path, and ignore if it already exists.
