@@ -25,8 +25,8 @@ const (
 	PinRetryDelay      = 250 * time.Millisecond
 	PinTimeout         = 10 * time.Second
 	NumPinRetries      = 3
-	PinBatchSize       = 40
-	PinOutstandingReqs = 50 // For backpressure
+	PinBatchSize       = 50
+	PinOutstandingReqs = 4 // For backpressure
 
 	PinSuccessFilename = "pinSuccess.txt"
 	PinFailureFilename = "pinFailure.txt"
@@ -231,6 +231,8 @@ func pinCidBatch(ipfsShell *shell.Shell, cids []string) error {
 	for i := 0; i < NumPinRetries; i++ {
 		if err := pinFn(); err == nil {
 			return nil
+		} else {
+			log.Printf("pin failed: attempt=%d, err=%s", i+1, err)
 		}
 		exponentialBackoff(i, NumPinRetries, PinRetryDelay)
 	}
