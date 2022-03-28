@@ -6,6 +6,11 @@ on:
     paths-ignore:
       - '.github/**'
   workflow_dispatch: # manually triggered
+    inputs:
+      environment:
+        description: 'Environment name (one of: dev, tnet, prod)'
+        required: false
+        default: ''
 
 jobs:
   build_and_push:
@@ -39,6 +44,11 @@ jobs:
         run: |
           echo "ENV_TAG=dev" >> $GITHUB_ENV
       -
+        name: Set environment from manual input
+        if: ${{ github.event.inputs.environment != '' }}
+        run: |
+          echo "ENV_TAG=${{ github.event.inputs.environment }}" >> $GITHUB_ENV
+      -
         name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v1
         with:
@@ -62,12 +72,11 @@ jobs:
         name: Build and push js-ceramic image
         env:
           IMAGE_ID_1: "3boxlabs/ipfs-pinset-migration"
-          IMAGE_ID_2: "${{ steps.login-ecr.outputs.registry }}/go-ipfs-pinset_migration"
-          IMAGE_ID_3: "${{ steps.login-ecr.outputs.registry }}/ipfs-pinset-migration-dev"
+          IMAGE_ID_2: "${{ steps.login-ecr.outputs.registry }}/ipfs-pinset-migration-${{ env.ENV_TAG }}"
         run: |
           EXTRA_TAGS=""
           if [[ "${{ env.ENV_TAG }}" == "prod" ]]; then
-            EXTRA_TAGS="--tag $IMAGE_ID_1:latest --tag $IMAGE_ID_2:latest --tag $IMAGE_ID_3:latest"
+            EXTRA_TAGS="--tag $IMAGE_ID_1:latest --tag $IMAGE_ID_2:latest"
           fi
           docker buildx build . --output 'type=image,push=true' \
             --tag $IMAGE_ID_1:${{ env.ENV_TAG }} \
@@ -78,8 +87,4 @@ jobs:
             --tag $IMAGE_ID_2:${{ env.SHA_TAG }} \
             --tag $IMAGE_ID_2:${{ github.sha }}  \
             --tag $IMAGE_ID_2:${{ env.BRANCH }}  \
-            --tag $IMAGE_ID_3:${{ env.ENV_TAG }} \
-            --tag $IMAGE_ID_3:${{ env.SHA_TAG }} \
-            --tag $IMAGE_ID_3:${{ github.sha }}  \
-            --tag $IMAGE_ID_3:${{ env.BRANCH }}  \
             $EXTRA_TAGS
