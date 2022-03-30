@@ -25,7 +25,7 @@ const (
 	PinRetryDelay      = 250 * time.Millisecond
 	PinTimeout         = 10 * time.Second
 	NumPinRetries      = 3
-	PinBatchSize       = 25
+	PinBatchSize       = 50
 	PinOutstandingReqs = 4 // For backpressure
 
 	PinSuccessFilename = "pinSuccess.txt"
