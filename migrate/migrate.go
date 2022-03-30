@@ -48,8 +48,9 @@ var (
 	// Stats
 	keysFoundCount     = uint32(0)
 	keysConvertedCount = uint32(0)
-	cidsPinnedCount    = uint32(0)
-	cidsRemainingCount = uint32(0)
+	pinnedCount        = uint32(0)
+	pinsFailedCount    = uint32(0)
+	pinsRemainingCount = uint32(0)
 )
 
 func Migrate(bucket, prefix, ipfsUrl, logPath string) {
@@ -200,20 +201,22 @@ func pinCids(ipfsShell *shell.Shell, cids []string) {
 
 			// Decrement the number of pins remaining regardless of whether pinning succeeded or failed
 			count := uint32(len(batchToPin))
-			cidsRemaining := atomic.AddUint32(&cidsRemainingCount, -count)
+			pinsRemaining := atomic.AddUint32(&pinsRemainingCount, -count)
 			if err == nil {
 				log.Printf(
-					"pinned batch in %s, total pinned=%d, remaining cids=%d",
+					"pinned batch in %s, total pinned=%d, total failed=%d, total remaining=%d",
 					elapsed,
-					atomic.AddUint32(&cidsPinnedCount, count),
-					cidsRemaining,
+					atomic.AddUint32(&pinnedCount, count),
+					atomic.LoadUint32(&pinsFailedCount),
+					pinsRemaining,
 				)
 			} else {
 				log.Printf(
-					"pin failed in %s, total pinned=%d, remaining cids=%d, err=%s",
+					"pin failed in %s, total pinned=%d, total failed=%d, total remaining=%d, err=%s",
 					elapsed,
-					atomic.LoadUint32(&cidsPinnedCount),
-					cidsRemaining,
+					atomic.LoadUint32(&pinnedCount),
+					atomic.AddUint32(&pinsFailedCount, count),
+					pinsRemaining,
 					err,
 				)
 			}
@@ -268,8 +271,8 @@ func readLogFiles(path string) ([]string, []string) {
 	pinSuccessCids := readLogFile(path+"/"+PinSuccessFilename, true)
 	pinFailureCids := readLogFile(path+"/"+PinFailureFilename, false)
 
-	// Set the number of CIDs remaining to be pinned to the number of CIDs that failed to be pinned previously
-	atomic.StoreUint32(&cidsRemainingCount, uint32(len(pinFailureCids)))
+	// Set the number of pins remaining to the number of CIDs that failed to be pinned previously
+	atomic.StoreUint32(&pinsRemainingCount, uint32(len(pinFailureCids)))
 
 	log.Printf("read: pinSuccess=%d, pinFailure=%d", len(pinSuccessCids), len(pinFailureCids))
 	return pinSuccessCids, pinFailureCids

@@ -70,7 +70,7 @@ func cidsFromS3Page(page *s3.ListObjectsV2Output) []string {
 	cids := make([]string, 0, page.KeyCount)
 	pageKeysFound := uint32(0)
 	pageKeysConverted := uint32(0)
-	pageCidsRemaining := uint32(0)
+	pagePinsRemaining := uint32(0)
 	for _, object := range page.Contents {
 		if object.Size != 0 { // filter out directories
 			pageKeysFound++
@@ -81,7 +81,7 @@ func cidsFromS3Page(page *s3.ListObjectsV2Output) []string {
 			if err == nil {
 				pageKeysConverted++
 				if !isCidPinned(cid) {
-					pageCidsRemaining++
+					pagePinsRemaining++
 					cids = append(cids, cid)
 				}
 			} else {
@@ -92,6 +92,6 @@ func cidsFromS3Page(page *s3.ListObjectsV2Output) []string {
 
 	log.Printf("keys found=%d, total found=%d", pageKeysFound, atomic.AddUint32(&keysFoundCount, pageKeysFound))
 	log.Printf("keys converted=%d, total converted=%d", pageKeysConverted, atomic.AddUint32(&keysConvertedCount, pageKeysConverted))
-	log.Printf("cids not pinned=%d, total not pinned=%d", pageCidsRemaining, atomic.AddUint32(&cidsRemainingCount, pageCidsRemaining))
+	log.Printf("cids not pinned=%d, total remaining=%d", pagePinsRemaining, atomic.AddUint32(&pinsRemainingCount, pagePinsRemaining))
 	return cids
 }
