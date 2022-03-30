@@ -2,7 +2,7 @@ name: Publish images to Docker Hub and AWS ECR
 
 on:
   push:
-    branches: [ develop, release-candidate, main ]
+    branches: [ develop, tnet, main ]
     paths-ignore:
       - '.github/**'
   workflow_dispatch: # manually triggered
@@ -35,7 +35,7 @@ jobs:
           echo "ENV_TAG=prod" >> $GITHUB_ENV
       -
         name: Set rc branch tag
-        if: ${{ env.BRANCH == 'release-candidate' }}
+        if: ${{ env.BRANCH == 'tnet' }}
         run: |
           echo "ENV_TAG=tnet" >> $GITHUB_ENV
       -
@@ -82,9 +82,7 @@ jobs:
             --tag $IMAGE_ID_1:${{ env.ENV_TAG }} \
             --tag $IMAGE_ID_1:${{ env.SHA_TAG }} \
             --tag $IMAGE_ID_1:${{ github.sha }}  \
-            --tag $IMAGE_ID_1:${{ env.BRANCH }}  \
             --tag $IMAGE_ID_2:${{ env.ENV_TAG }} \
             --tag $IMAGE_ID_2:${{ env.SHA_TAG }} \
             --tag $IMAGE_ID_2:${{ github.sha }}  \
-            --tag $IMAGE_ID_2:${{ env.BRANCH }}  \
             $EXTRA_TAGS

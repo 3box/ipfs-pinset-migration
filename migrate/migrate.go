@@ -25,7 +25,7 @@ const (
 	PinRetryDelay      = 250 * time.Millisecond
 	PinTimeout         = 10 * time.Second
 	NumPinRetries      = 3
-	PinBatchSize       = 50
+	PinBatchSize       = 25
 	PinOutstandingReqs = 4 // For backpressure
 
 	PinSuccessFilename = "pinSuccess.txt"
@@ -48,7 +48,8 @@ var (
 	// Stats
 	keysFoundCount     = uint32(0)
 	keysConvertedCount = uint32(0)
-	cidsNotPinnedCount = uint32(0)
+	cidsPinnedCount    = uint32(0)
+	cidsRemainingCount = uint32(0)
 )
 
 func Migrate(bucket, prefix, ipfsUrl, logPath string) {
@@ -121,7 +122,7 @@ func migratePinstore(bucket, prefix, logPath string, ipfsShell *shell.Shell) (in
 				pinCids(ipfsShell, cids)
 			}()
 		} else {
-			log.Printf("no unpinned cids found on page %d", pageNum)
+			log.Printf("no cids to be pinned found on page %d", pageNum)
 		}
 		if (pageNum % PagesBeforeSleep) == 0 {
 			// Sleep before pulling more pages to avoid S3 throttling
@@ -199,11 +200,22 @@ func pinCids(ipfsShell *shell.Shell, cids []string) {
 
 			// Decrement the number of pins remaining regardless of whether pinning succeeded or failed
 			count := uint32(len(batchToPin))
-			cidsNotPinned := atomic.AddUint32(&cidsNotPinnedCount, -count)
+			cidsRemaining := atomic.AddUint32(&cidsRemainingCount, -count)
 			if err == nil {
-				log.Printf("pinned batch in %s, remaining cids=%d", elapsed, cidsNotPinned)
+				log.Printf(
+					"pinned batch in %s, total pinned=%d, remaining cids=%d",
+					elapsed,
+					atomic.AddUint32(&cidsPinnedCount, count),
+					cidsRemaining,
+				)
 			} else {
-				log.Printf("pin failed in %s, remaining cids=%d, err=%s", elapsed, cidsNotPinned, err)
+				log.Printf(
+					"pin failed in %s, total pinned=%d, remaining cids=%d, err=%s",
+					elapsed,
+					atomic.LoadUint32(&cidsPinnedCount),
+					cidsRemaining,
+					err,
+				)
 			}
 		}()
 	}
@@ -257,7 +269,7 @@ func readLogFiles(path string) ([]string, []string) {
 	pinFailureCids := readLogFile(path+"/"+PinFailureFilename, false)
 
 	// Set the number of CIDs remaining to be pinned to the number of CIDs that failed to be pinned previously
-	atomic.StoreUint32(&cidsNotPinnedCount, uint32(len(pinFailureCids)))
+	atomic.StoreUint32(&cidsRemainingCount, uint32(len(pinFailureCids)))
 
 	log.Printf("read: pinSuccess=%d, pinFailure=%d", len(pinSuccessCids), len(pinFailureCids))
 	return pinSuccessCids, pinFailureCids
