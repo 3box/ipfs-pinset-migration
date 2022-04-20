@@ -11,17 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	shell "github.com/ipfs/go-ipfs-api"
 )
 
 const (
-	PagesBeforeSleep     = 5 // Up to 5000 entries given a default page size of 1000
-	PaginationSleep      = 1 * time.Second
-	PaginationRetryDelay = 250 * time.Millisecond
-	PaginationTimeout    = 3 * time.Second
-	NumPaginationRetries = 3
-
 	PinRetryDelay      = 250 * time.Millisecond
 	PinTimeout         = 10 * time.Second
 	NumPinRetries      = 3
@@ -53,20 +46,11 @@ var (
 	pinsRemainingCount = uint32(0)
 )
 
-func Migrate(bucket, prefix, ipfsUrl, logPath string) {
-	// Log the configuration so that we know what settings are being used for the current run
-	log.Print("Configuration:")
-	log.Printf("\tPagesBeforeSleep=%d", PagesBeforeSleep)
-	log.Printf("\tPaginationSleep=%s", PaginationSleep)
-	log.Printf("\tPaginationRetryDelay=%s", PaginationRetryDelay)
-	log.Printf("\tPaginationTimeout=%s", PaginationTimeout)
-	log.Printf("\tNumPaginationRetries=%d", NumPaginationRetries)
-	log.Printf("\tPinRetryDelay=%s", PinRetryDelay)
-	log.Printf("\tPinTimeout=%s", PinTimeout)
-	log.Printf("\tNumPinRetries=%d", NumPinRetries)
-	log.Printf("\tPinBatchSize=%d", PinBatchSize)
-	log.Printf("\tPinOutstandingReqs=%d", PinOutstandingReqs)
+type Migration interface {
+	Migrate(logPath string, ipfsShell *shell.Shell) (int, int)
+}
 
+func Migrate(migration Migration, ipfsUrl, logPath string) {
 	start := time.Now()
 
 	// Create the log file path, and ignore if it already exists.
@@ -81,7 +65,7 @@ func Migrate(bucket, prefix, ipfsUrl, logPath string) {
 	pinFailedCids(logPath, ipfsShell)
 
 	// Paginate through the pinstore and attempt to re-pin them
-	pinSuccessCount, pinFailureCount := migratePinstore(bucket, prefix, logPath, ipfsShell)
+	pinSuccessCount, pinFailureCount := migration.Migrate(logPath, ipfsShell)
 
 	log.Printf(
 		"Done. Migration results: found %d, converted %d, pin success %d, pin failure %d, elapsed=%s",
@@ -100,81 +84,6 @@ func pinFailedCids(logPath string, ipfsShell *shell.Shell) (int, int) {
 	// Wait for all goroutines to complete, then write final logs.
 	wg.Wait()
 	return writeLogFiles(logPath)
-}
-
-func migratePinstore(bucket, prefix, logPath string, ipfsShell *shell.Shell) (int, int) {
-	paginator := s3Paginator(bucket, prefix)
-	pageNum := 1
-	for paginator.HasMorePages() {
-		// Pagination is stateful in order to keep track of position and so should not be placed in a goroutine
-		page, err := nextPage(paginator)
-		if err != nil { // We've retried and still failed, exit the loop.
-			log.Printf("pagination failed: %s", err)
-			break
-		}
-		log.Printf("retrieved page: %d", pageNum)
-		cids := cidsFromS3Page(page)
-		if len(cids) > 0 {
-			// Pin requests are standalone and can be in a goroutine for parallelism. Use a wait group to synchronize
-			// completion of all goroutines.
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				pinCids(ipfsShell, cids)
-			}()
-		} else {
-			log.Printf("no cids to be pinned found on page %d", pageNum)
-		}
-		if (pageNum % PagesBeforeSleep) == 0 {
-			// Sleep before pulling more pages to avoid S3 throttling
-			time.Sleep(PaginationSleep)
-		}
-		pageNum++
-	}
-
-	// Wait for all goroutines to complete, then write final logs.
-	wg.Wait()
-	return writeLogFiles(logPath)
-}
-
-func nextPage(paginator *s3.ListObjectsV2Paginator) (*s3.ListObjectsV2Output, error) {
-	nextFn := func() (*s3.ListObjectsV2Output, error) {
-		// Use a new child context with timeout for each page retrieval attempt
-		pageCtx, pageCancel := context.WithTimeout(ctx, PaginationTimeout)
-		defer pageCancel()
-
-		type pageResult struct {
-			page *s3.ListObjectsV2Output
-			err  error
-		}
-		// Buffered channel with a single slot
-		ch := make(chan pageResult, 1)
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			page, err := paginator.NextPage(pageCtx)
-			ch <- pageResult{page: page, err: err}
-		}()
-		for {
-			select {
-			case val := <-ch:
-				return val.page, val.err
-			case <-pageCtx.Done():
-				return nil, pageCtx.Err()
-			}
-		}
-	}
-	for i := 0; i < NumPaginationRetries; i++ {
-		// Ref: https://stackoverflow.com/questions/45617758/defer-in-the-loop-what-will-be-better
-		if page, err := nextFn(); err == nil {
-			return page, nil
-		} else {
-			log.Printf("pagination failed: attempt=%d, err=%s", i+1, err)
-		}
-		exponentialBackoff(i, NumPaginationRetries, PaginationRetryDelay)
-	}
-	return nil, errors.New("maximum retries exceeded")
 }
 
 func pinCids(ipfsShell *shell.Shell, cids []string) {

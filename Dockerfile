@@ -18,4 +18,4 @@ RUN cd ./cmd/ipfs-pinset-migration && go build -o /usr/local/bin/ipfs-pinset-mig
 
 # Execute
 
-CMD ipfs-pinset-migration --bucket=$S3_PINSET_BUCKET_NAME --prefix=$S3_PINSET_BUCKET_PREFIX --ipfs=$IPFS_API_URL --logPath=$LOG_PATH
+ENTRYPOINT ["ipfs-pinset-migration"]
