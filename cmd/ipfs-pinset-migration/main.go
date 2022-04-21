@@ -1,34 +1,35 @@
 package main
 
 import (
-	"fmt"
-	"os"
-
-	migrate "github.com/3box/ipfs-pinset-migration/migrate"
-	flag "github.com/ogier/pflag"
+	"github.com/3box/ipfs-pinset-migration/migrate"
+	"github.com/alecthomas/kong"
 )
 
-var (
-	bucket     string
-	pinsPrefix string
-	ipfsApiUrl string
-	logPath    string
-)
+type CliOptions struct {
+	S3 struct {
+		Bucket string `short:"b" help:"S3 bucket name"`
+		Prefix string `short:"p" help:"S3 bucket prefix for pins"`
+	} `cmd:"" name:"s3" help:"Migrate S3 pin store"`
 
-func main() {
-	flag.Parse()
-	if flag.NFlag() < 2 {
-		fmt.Printf("Usage: %s [options]\n", os.Args[0])
-		fmt.Println("Options:")
-		flag.PrintDefaults()
-		os.Exit(1)
-	}
-	migrate.Migrate(bucket, pinsPrefix, ipfsApiUrl, logPath)
+	Fs struct {
+		Path string `short:"p" help:"Filesystem path for pins"`
+	} `cmd:"" name:"fs" help:"Migrate filesystem pin store"`
+
+	IpfsApiUrl string `short:"i" default:"localhost:5001" help:"IPFS API url"`
+	LogPath    string `short:"l" default:"/tmp" help:"Path to store log files"`
 }
 
-func init() {
-	flag.StringVarP(&bucket, "bucket", "b", "", "S3 bucket name")
-	flag.StringVarP(&pinsPrefix, "prefix", "p", "", "S3 bucket prefix for pins")
-	flag.StringVarP(&ipfsApiUrl, "ipfs", "i", "localhost:5001", "IPFS API url")
-	flag.StringVarP(&logPath, "logPath", "l", "/tmp", "Path to store log files")
+func main() {
+	var cli CliOptions
+	ctx := kong.Parse(&cli)
+	switch ctx.Command() {
+	case "s3":
+		migrate.Migrate(&migrate.MigrateS3{Bucket: cli.S3.Bucket, Prefix: cli.S3.Prefix}, cli.IpfsApiUrl, cli.LogPath)
+		break
+	case "fs":
+		migrate.Migrate(&migrate.MigrateFs{Path: cli.Fs.Path}, cli.IpfsApiUrl, cli.LogPath)
+		break
+	default:
+		panic(ctx.Command())
+	}
 }
