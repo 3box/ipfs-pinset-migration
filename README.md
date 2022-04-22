@@ -1,6 +1,6 @@
 # ipfs-pinset-migration
 
-Migrate pins from S3 bucket to go-ipfs
+Migrate pins from an AWS S3 bucket or local filesystem to `go-ipfs`
 
 ## Usage
 
