@@ -6,11 +6,6 @@ on:
     paths-ignore:
       - '.github/**'
   workflow_dispatch: # manually triggered
-    inputs:
-      environment:
-        description: 'Environment name (one of: dev, tnet, prod)'
-        required: false
-        default: ''
 
 jobs:
   build_and_push:
